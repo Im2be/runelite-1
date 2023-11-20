@@ -80,12 +80,14 @@ import net.runelite.api.events.GrandExchangeSearched;
 import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.events.ScriptCallbackEvent;
 import net.runelite.api.events.ScriptPostFired;
+import net.runelite.api.widgets.ComponentID;
+import net.runelite.api.widgets.InterfaceID;
 import net.runelite.api.widgets.Widget;
-import net.runelite.api.widgets.WidgetID;
-import net.runelite.api.widgets.WidgetInfo;
+import net.runelite.api.widgets.WidgetUtil;
 import net.runelite.client.Notifier;
 import net.runelite.client.account.AccountSession;
 import net.runelite.client.account.SessionManager;
+import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.config.RuneLiteConfig;
 import net.runelite.client.eventbus.Subscribe;
@@ -184,6 +186,9 @@ public class GrandExchangePlugin extends Plugin
 
 	@Inject
 	private RuneLiteConfig runeLiteConfig;
+
+	@Inject
+	private ClientThread clientThread;
 
 	@Inject
 	private ScheduledExecutorService scheduledExecutorService;
@@ -333,6 +338,18 @@ public class GrandExchangePlugin extends Plugin
 		}
 
 		lastLoginTick = -1;
+
+		if (client.getGameState() == GameState.LOGGED_IN)
+		{
+			final GrandExchangeOffer[] offers = client.getGrandExchangeOffers();
+			for (int i = 0; i < offers.length; i++)
+			{
+				final int slot = i;
+				clientThread.invokeLater(() -> updatePanel(slot, offers[slot]));
+
+				updateConfig(i, offers[i]);
+			}
+		}
 	}
 
 	@Override
@@ -396,10 +413,7 @@ public class GrandExchangePlugin extends Plugin
 		log.debug("GE offer updated: state: {}, slot: {}, item: {}, qty: {}, lastLoginTick: {}",
 			offer.getState(), slot, offer.getItemId(), offer.getQuantitySold(), lastLoginTick);
 
-		ItemComposition offerItem = itemManager.getItemComposition(offer.getItemId());
-		boolean shouldStack = offerItem.isStackable() || offer.getTotalQuantity() > 1;
-		BufferedImage itemImage = itemManager.getImage(offer.getItemId(), offer.getTotalQuantity(), shouldStack);
-		SwingUtilities.invokeLater(() -> panel.getOffersPanel().updateOffer(offerItem, itemImage, offer, slot));
+		updatePanel(slot, offer);
 
 		updateLimitTimer(offer);
 
@@ -525,6 +539,10 @@ public class GrandExchangePlugin extends Plugin
 		{
 			return WorldType.SEASONAL;
 		}
+		else if (worldTypes.contains(net.runelite.api.WorldType.TOURNAMENT_WORLD))
+		{
+			return WorldType.TOURNAMENT;
+		}
 		else if (worldTypes.contains(net.runelite.api.WorldType.DEADMAN))
 		{
 			return WorldType.DEADMAN;
@@ -537,6 +555,14 @@ public class GrandExchangePlugin extends Plugin
 		{
 			return null;
 		}
+	}
+
+	private void updatePanel(int slot, GrandExchangeOffer offer)
+	{
+		ItemComposition offerItem = itemManager.getItemComposition(offer.getItemId());
+		boolean shouldStack = offerItem.isStackable() || offer.getTotalQuantity() > 1;
+		BufferedImage itemImage = itemManager.getImage(offer.getItemId(), offer.getTotalQuantity(), shouldStack);
+		SwingUtilities.invokeLater(() -> panel.getOffersPanel().updateOffer(offerItem, itemImage, offer, slot));
 	}
 
 	private void updateConfig(int slot, GrandExchangeOffer offer)
@@ -561,16 +587,20 @@ public class GrandExchangePlugin extends Plugin
 	@Subscribe
 	public void onChatMessage(ChatMessage event)
 	{
-		if (!this.config.enableNotifications() || event.getType() != ChatMessageType.GAMEMESSAGE)
+		if (event.getType() != ChatMessageType.GAMEMESSAGE)
 		{
 			return;
 		}
 
 		String message = Text.removeTags(event.getMessage());
 
-		if (message.startsWith("Grand Exchange:"))
+		if (message.startsWith("Grand Exchange:") && config.enableNotifications())
 		{
-			this.notifier.notify(message);
+			notifier.notify(message);
+		}
+		else if (message.startsWith("Grand Exchange: Finished") && config.notifyOnOfferComplete())
+		{
+			notifier.notify(message);
 		}
 	}
 
@@ -607,20 +637,20 @@ public class GrandExchangePlugin extends Plugin
 		final MenuEntry[] entries = client.getMenuEntries();
 		final MenuEntry menuEntry = entries[entries.length - 1];
 		final int widgetId = menuEntry.getParam1();
-		final int groupId = WidgetInfo.TO_GROUP(widgetId);
+		final int groupId = WidgetUtil.componentToInterface(widgetId);
 
 		switch (groupId)
 		{
-			case WidgetID.BANK_GROUP_ID:
+			case InterfaceID.BANK:
 				// Don't show for view tabs and such
-				if (WidgetInfo.TO_CHILD(widgetId) != WidgetInfo.BANK_ITEM_CONTAINER.getChildId())
+				if (widgetId != ComponentID.BANK_ITEM_CONTAINER)
 				{
 					break;
 				}
-			case WidgetID.INVENTORY_GROUP_ID:
-			case WidgetID.BANK_INVENTORY_GROUP_ID:
-			case WidgetID.GRAND_EXCHANGE_INVENTORY_GROUP_ID:
-			case WidgetID.SHOP_INVENTORY_GROUP_ID:
+			case InterfaceID.INVENTORY:
+			case InterfaceID.BANK_INVENTORY:
+			case InterfaceID.GRAND_EXCHANGE_INVENTORY:
+			case InterfaceID.SHOP_INVENTORY:
 				menuEntry.setOption(SEARCH_GRAND_EXCHANGE);
 				menuEntry.setType(MenuAction.RUNELITE);
 		}
@@ -654,7 +684,7 @@ public class GrandExchangePlugin extends Plugin
 
 		String underlineTag = "<u=" + ColorUtil.colorToHexCode(FUZZY_HIGHLIGHT_COLOR) + ">";
 
-		Widget results = client.getWidget(WidgetInfo.CHATBOX_GE_SEARCH_RESULTS);
+		Widget results = client.getWidget(ComponentID.CHATBOX_GE_SEARCH_RESULTS);
 		Widget[] children = results.getDynamicChildren();
 		int resultCount = children.length / 3;
 
@@ -900,7 +930,7 @@ public class GrandExchangePlugin extends Plugin
 			}
 		}
 
-		if (config.showActivelyTradedPrice())
+		if (config.showActivelyTradedPrice() && !client.getWorldType().contains(net.runelite.api.WorldType.DEADMAN))
 		{
 			final int price = itemManager.getItemPriceWithSource(itemId, true);
 			if (price > 0)

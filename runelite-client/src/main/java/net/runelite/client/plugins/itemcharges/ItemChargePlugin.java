@@ -40,6 +40,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.EquipmentInventorySlot;
+import net.runelite.api.GameState;
 import net.runelite.api.InventoryID;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
@@ -51,9 +52,9 @@ import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.ScriptCallbackEvent;
 import net.runelite.api.events.VarbitChanged;
 import net.runelite.api.events.WidgetLoaded;
+import net.runelite.api.widgets.ComponentID;
+import net.runelite.api.widgets.InterfaceID;
 import net.runelite.api.widgets.Widget;
-import net.runelite.api.widgets.WidgetID;
-import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.Notifier;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
@@ -197,6 +198,10 @@ public class ItemChargePlugin extends Plugin
 	protected void startUp()
 	{
 		overlayManager.add(overlay);
+		if (client.getGameState() == GameState.LOGGED_IN)
+		{
+			clientThread.invokeLater(() -> updateExplorerRingCharges(client.getVarbitValue(Varbits.EXPLORER_RING_ALCHS)));
+		}
 	}
 
 	@Override
@@ -383,7 +388,7 @@ public class ItemChargePlugin extends Plugin
 				{
 					notifier.notify("Your ring of forging has melted.");
 				}
-				
+
 				// This chat message triggers before the used message so add 1 to the max charges to ensure proper sync
 				updateRingOfForgingCharges(MAX_RING_OF_FORGING_CHARGES + 1);
 			}
@@ -479,8 +484,18 @@ public class ItemChargePlugin extends Plugin
 				// Determine if the player mined with a Bracelet of Clay equipped.
 				if (equipment != null && equipment.contains(ItemID.BRACELET_OF_CLAY))
 				{
-					int charges = Ints.constrainToRange(getItemCharges(ItemChargeConfig.KEY_BRACELET_OF_CLAY) - 1, 0, MAX_BRACELET_OF_CLAY_CHARGES);
-					updateBraceletOfClayCharges(charges);
+					final ItemContainer inventory = client.getItemContainer(InventoryID.INVENTORY);
+
+					// Charge is not used if only 1 inventory slot is available when mining in Prifddinas
+					boolean ignore = inventory != null
+						&& inventory.count() == 27
+						&& message.equals(BRACELET_OF_CLAY_USE_TEXT_TRAHAEARN);
+
+					if (!ignore)
+					{
+						int charges = Ints.constrainToRange(getItemCharges(ItemChargeConfig.KEY_BRACELET_OF_CLAY) - 1, 0, MAX_BRACELET_OF_CLAY_CHARGES);
+						updateBraceletOfClayCharges(charges);
+					}
 				}
 			}
 			else if (message.equals(BRACELET_OF_CLAY_BREAK_TEXT))
@@ -532,11 +547,11 @@ public class ItemChargePlugin extends Plugin
 	@Subscribe
 	public void onWidgetLoaded(WidgetLoaded widgetLoaded)
 	{
-		if (widgetLoaded.getGroupId() == WidgetID.DIALOG_SPRITE_GROUP_ID)
+		if (widgetLoaded.getGroupId() == InterfaceID.DIALOG_SPRITE)
 		{
 			clientThread.invokeLater(() ->
 			{
-				Widget sprite = client.getWidget(WidgetInfo.DIALOG_SPRITE_SPRITE);
+				Widget sprite = client.getWidget(ComponentID.DIALOG_SPRITE_SPRITE);
 				if (sprite != null)
 				{
 					switch (sprite.getItemId())
@@ -637,7 +652,7 @@ public class ItemChargePlugin extends Plugin
 		}
 		lastCheckTick = currentTick;
 
-		final Widget widgetDestroyItemName = client.getWidget(WidgetInfo.DESTROY_ITEM_NAME);
+		final Widget widgetDestroyItemName = client.getWidget(ComponentID.DESTROY_ITEM_NAME);
 		if (widgetDestroyItemName == null)
 		{
 			return;
